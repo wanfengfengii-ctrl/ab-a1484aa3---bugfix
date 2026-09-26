@@ -46,6 +46,59 @@ describe('adjudicate · 可行方案与决胜规则', () => {
     }
   });
 
+  it('纳米级代价差不得被容差抹平：四块均须取零代价的 #2 位置', () => {
+    // 2 条零力臂导轨，4 块单位质量配重；#1 代价 1e-10，#2 代价 0。
+    // 各方案力矩余量完全相同，严格最小总代价为 0（旧实现以 EPS=1e-9
+    // 比较代价，误把 4e-10 与 0 当并列，按序号错选了 #1）。
+    const outcome = adjudicate({
+      rails: rails(['Z1', 0], ['Z2', 0]),
+      blocks: [
+        block('b1', 1, [[0, 1e-10], [1, 0]]),
+        block('b2', 1, [[0, 1e-10], [1, 0]]),
+        block('b3', 1, [[0, 1e-10], [1, 0]]),
+        block('b4', 1, [[0, 1e-10], [1, 0]]),
+      ],
+      limits: limits(4, -1, 1),
+    });
+    expect(outcome.feasible).toBe(true);
+    if (!outcome.feasible) return;
+    const plan = outcome.plan;
+    // 完整方案：四块各恰用一次，且全部采用位置录入序号 #2（optionIndex 1）
+    expect(plan.steps).toHaveLength(4);
+    expect(new Set(plan.steps.map((s) => s.blockIndex))).toEqual(new Set([0, 1, 2, 3]));
+    expect(plan.steps.map((s) => s.optionIndex)).toEqual([1, 1, 1, 1]);
+    expect(plan.steps.map((s) => s.railName)).toEqual(['Z2', 'Z2', 'Z2', 'Z2']);
+    // 总代价严格为 0（不用 toBeCloseTo：容差会把缺陷掩盖掉）
+    expect(plan.totalCost).toBe(0);
+    // 对照：错选方案本会产生 4e-10 的可避免成本
+    expect(4 * 1e-10).toBeGreaterThan(plan.totalCost);
+    // 力矩余量与边界：零力臂使力矩恒为 0，余量为 1；载荷恰好到上限
+    expect(plan.minTorqueMargin).toBe(1);
+    plan.steps.forEach((s) => {
+      expect(s.cumulativeTorque).toBe(0);
+      expect(s.cumulativeMass).toBeLessThanOrEqual(4 + EPS);
+    });
+    expect(plan.steps[3].cumulativeMass).toBe(4);
+  });
+
+  it('真正同代价（含双零代价）时仍按位置录入序号稳定决胜', () => {
+    // 两个位置代价都为 0：不存在成本差，序号决胜应选 #1（optionIndex 0）。
+    const outcome = adjudicate({
+      rails: rails(['Z1', 0], ['Z2', 0]),
+      blocks: [
+        block('b1', 1, [[0, 0], [1, 0]]),
+        block('b2', 1, [[0, 0], [1, 0]]),
+        block('b3', 1, [[0, 0], [1, 0]]),
+        block('b4', 1, [[0, 0], [1, 0]]),
+      ],
+      limits: limits(4, -1, 1),
+    });
+    expect(outcome.feasible).toBe(true);
+    if (!outcome.feasible) return;
+    expect(outcome.plan.totalCost).toBe(0);
+    expect(outcome.plan.steps.map((s) => s.optionIndex)).toEqual([0, 0, 0, 0]);
+  });
+
   it('力矩余量最大优先于总代价最小', () => {
     // 便宜方案（代价 2）余量仅 1；居中方案（代价 20）余量 5，必须选后者。
     const outcome = adjudicate({

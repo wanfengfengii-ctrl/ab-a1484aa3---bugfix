@@ -49,6 +49,37 @@ if (r1.feasible) {
   );
 }
 
+// 纳米级代价差场景：#1 代价 1e-10、#2 代价 0；力矩余量全同，
+// 严格最低总代价为 0，四块均须采用位置录入序号 #2（optionIndex 1）。
+const nanoCostScenario: Scenario = {
+  rails: [
+    { id: 'Z1', name: 'Z1', coordinate: 0 },
+    { id: 'Z2', name: 'Z2', coordinate: 0 },
+  ],
+  blocks: [1, 2, 3, 4].map((k) => ({
+    id: `b${k}`,
+    name: `b${k}`,
+    mass: 1,
+    options: [
+      { railId: 'Z1', cost: 1e-10 },
+      { railId: 'Z2', cost: 0 },
+    ],
+  })),
+  limits: { maxLoad: 4, minTorque: -1, maxTorque: 1 },
+};
+
+const r0 = adjudicate(nanoCostScenario);
+check(r0.feasible, '裁决模块：纳米代价场景应判定为可行');
+if (r0.feasible) {
+  const p = r0.plan;
+  check(p.steps.length === 4, '纳米代价：完整方案应覆盖四块配重');
+  check(
+    p.steps.every((s) => s.optionIndex === 1 && s.railId === 'Z2'),
+    '纳米代价：四块均须采用零代价的位置 #2（Z2）',
+  );
+  check(p.totalCost === 0, `纳米代价：总代价须严格为 0（实际 ${p.totalCost}）`);
+}
+
 // 不可行场景：深度 1 即止步，最深前缀为 b1@R（余量最大），剩余选择同时触发载荷与力矩限制。
 const infeasibleScenario: Scenario = {
   rails: [{ id: 'R', name: 'R', coordinate: 1 }],

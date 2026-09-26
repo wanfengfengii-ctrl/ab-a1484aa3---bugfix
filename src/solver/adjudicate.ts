@@ -8,7 +8,10 @@ import type {
   ViolationKind,
 } from './types';
 
-/** 数值比较容差：质量/力矩为浮点录入，边界判定与决胜比较统一使用。 */
+/**
+ * 数值比较容差：质量/力臂为浮点录入，载荷与力矩的边界判定及力矩余量决胜使用。
+ * 注意：安装代价不使用此容差——代价是逐位有意义的录入值，必须严格比较。
+ */
 export const EPS = 1e-9;
 
 interface FlatOption {
@@ -24,6 +27,18 @@ interface FlatBlock {
   name: string;
   mass: number;
   options: FlatOption[];
+}
+
+/**
+ * 升序累加非负代价。安装代价是录入值而非物理测量值，必须逐位严格比较，
+ * 不得套用 EPS（否则 1e-10 这样的纳米级代价差会被误判为并列）。
+ * 按固定升序累加使总和与挂装次序无关：同一组代价无论以何种次序挂装，
+ * 得到的总代价逐位相同，真正同代价的方案才能稳定地落到序号决胜。
+ */
+function sumCostsAscending(sortedAscending: readonly number[]): number {
+  let total = 0;
+  for (const c of sortedAscending) total += c;
+  return total;
 }
 
 function torqueMarginOf(torque: number, limits: Limits): number {
@@ -43,15 +58,16 @@ function lexCompareSteps(a: StepRecord[], b: StepRecord[]): number {
 /**
  * 裁决优先级（依次）：
  * 1. 力矩余量（所有前缀中的最小值）最大者优先；
- * 2. 总安装代价最小者优先；
+ * 2. 总安装代价最小者优先（严格数值比较，不使用容差：代价是录入值，
+ *    任何实际差异——哪怕仅 1e-10——都必须体现，序号决胜不得覆盖成本差）；
  * 3. 按挂装顺序的 (块录入序号, 位置录入序号) 序列字典序最小者优先。
  */
 function isBetter(a: Plan, b: Plan | null): boolean {
   if (b === null) return true;
   if (a.minTorqueMargin > b.minTorqueMargin + EPS) return true;
   if (a.minTorqueMargin < b.minTorqueMargin - EPS) return false;
-  if (a.totalCost < b.totalCost - EPS) return true;
-  if (a.totalCost > b.totalCost + EPS) return false;
+  if (a.totalCost < b.totalCost) return true;
+  if (a.totalCost > b.totalCost) return false;
   return lexCompareSteps(a.steps, b.steps) < 0;
 }
 
@@ -85,6 +101,8 @@ export function adjudicate(scenario: Scenario): AdjudicationOutcome {
 
   const used = new Array<boolean>(n).fill(false);
   const steps: StepRecord[] = [];
+  /** 当前路径已选代价，始终保持升序，使总代价与挂装次序无关。 */
+  const pathCosts: number[] = [];
   let best: Plan | null = null;
   /** 每个深度上按裁决优先级最优的可行前缀（用于无可行方案时的诊断）。 */
   const bestPartial: (Plan | null)[] = new Array(n + 1).fill(null);
@@ -97,8 +115,8 @@ export function adjudicate(scenario: Scenario): AdjudicationOutcome {
     finalTorque: steps.length > 0 ? steps[steps.length - 1].cumulativeTorque : 0,
   });
 
-  const dfs = (depth: number, mass: number, torque: number, cost: number, minMargin: number): void => {
-    const current = snapshot(cost, minMargin);
+  const dfs = (depth: number, mass: number, torque: number, totalCost: number, minMargin: number): void => {
+    const current = snapshot(totalCost, minMargin);
     if (isBetter(current, bestPartial[depth])) bestPartial[depth] = current;
     if (depth === n) {
       if (isBetter(current, best)) best = current;
@@ -114,12 +132,28 @@ export function adjudicate(scenario: Scenario): AdjudicationOutcome {
         if (torqueAfter < limits.minTorque - EPS || torqueAfter > limits.maxTorque + EPS) continue;
         const margin = torqueMarginOf(torqueAfter, limits);
         const nextMinMargin = Math.min(minMargin, margin);
-        const nextCost = cost + opt.cost;
+        // 将本步代价按升序插路径后重算规范总代价（代价非负，规模 ≤7，开销可忽略）。
+        let lo = 0;
+        let hi = pathCosts.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (pathCosts[mid] <= opt.cost) lo = mid + 1;
+          else hi = mid;
+        }
+        pathCosts.splice(lo, 0, opt.cost);
+        const nextCost = sumCostsAscending(pathCosts);
         if (best) {
           // 力矩余量已严格劣于最优解，剪枝。
-          if (nextMinMargin < best.minTorqueMargin - EPS) continue;
-          // 余量无法严格更优且代价已严格更差，剪枝。
-          if (nextMinMargin < best.minTorqueMargin + EPS && nextCost > best.totalCost + EPS) continue;
+          if (nextMinMargin < best.minTorqueMargin - EPS) {
+            pathCosts.splice(lo, 1);
+            continue;
+          }
+          // 余量无法严格更优，而代价（非负，继续挂装只会更高）已严格更贵，剪枝。
+          // 严格数值比较：哪怕只差 1e-10 也必须保留更便宜的分支。
+          if (nextMinMargin < best.minTorqueMargin + EPS && nextCost > best.totalCost) {
+            pathCosts.splice(lo, 1);
+            continue;
+          }
         }
         used[i] = true;
         steps.push({
@@ -139,6 +173,7 @@ export function adjudicate(scenario: Scenario): AdjudicationOutcome {
         dfs(depth + 1, massAfter, torqueAfter, nextCost, nextMinMargin);
         steps.pop();
         used[i] = false;
+        pathCosts.splice(lo, 1);
       }
     }
   };
