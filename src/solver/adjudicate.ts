@@ -8,8 +8,18 @@ import type {
   ViolationKind,
 } from './types';
 
-/** 数值比较容差：质量/力矩为浮点录入，边界判定与决胜比较统一使用。 */
+/** 物理量（质量/力矩）比较容差：边界判定与力矩余量决胜统一使用。 */
 export const EPS = 1e-9;
+
+/**
+ * 代价比较容差：代价为非负录入值逐项相加（至多 7 项），容差只需覆盖浮点累加误差，
+ * 绝不能复用物理量边界容差 EPS——否则像 1e-10 这样真实存在的代价差会被误判为相等，
+ * 使位置录入序号决胜覆盖本应严格更优的方案。仅当总代价确实相等时才进入序号决胜。
+ */
+const COST_SUM_TERM_LIMIT = 8;
+function costTolerance(a: number, b: number): number {
+  return Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b)) * COST_SUM_TERM_LIMIT;
+}
 
 interface FlatOption {
   optionIndex: number;
@@ -50,8 +60,9 @@ function isBetter(a: Plan, b: Plan | null): boolean {
   if (b === null) return true;
   if (a.minTorqueMargin > b.minTorqueMargin + EPS) return true;
   if (a.minTorqueMargin < b.minTorqueMargin - EPS) return false;
-  if (a.totalCost < b.totalCost - EPS) return true;
-  if (a.totalCost > b.totalCost + EPS) return false;
+  const costEps = costTolerance(a.totalCost, b.totalCost);
+  if (a.totalCost < b.totalCost - costEps) return true;
+  if (a.totalCost > b.totalCost + costEps) return false;
   return lexCompareSteps(a.steps, b.steps) < 0;
 }
 
@@ -118,8 +129,12 @@ export function adjudicate(scenario: Scenario): AdjudicationOutcome {
         if (best) {
           // 力矩余量已严格劣于最优解，剪枝。
           if (nextMinMargin < best.minTorqueMargin - EPS) continue;
-          // 余量无法严格更优且代价已严格更差，剪枝。
-          if (nextMinMargin < best.minTorqueMargin + EPS && nextCost > best.totalCost + EPS) continue;
+          // 余量无法严格更优且代价已严格更差，剪枝（代价差再小也是真实差异，不得按物理容差抹平）。
+          if (
+            nextMinMargin < best.minTorqueMargin + EPS &&
+            nextCost > best.totalCost + costTolerance(nextCost, best.totalCost)
+          )
+            continue;
         }
         used[i] = true;
         steps.push({

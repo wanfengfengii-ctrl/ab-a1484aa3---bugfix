@@ -49,6 +49,43 @@ if (r1.feasible) {
   );
 }
 
+// 纳米级代价差回归：4 块质量 1、2 个零力臂导轨，#1 代价 1e-10、#2 代价 0。
+// 所有方案力矩余量相同，必须严格取总代价 0 的方案（四块均 #2），序号决胜不得覆盖真实成本差。
+const tinyCostScenario: Scenario = {
+  rails: [
+    { id: 'P1', name: 'P1', coordinate: 0 },
+    { id: 'P2', name: 'P2', coordinate: 0 },
+  ],
+  blocks: [1, 2, 3, 4].map((k) => ({
+    id: `b${k}`,
+    name: `b${k}`,
+    mass: 1,
+    options: [
+      { railId: 'P1', cost: 1e-10 },
+      { railId: 'P2', cost: 0 },
+    ],
+  })),
+  limits: { maxLoad: 4, minTorque: -1, maxTorque: 1 },
+};
+
+const r0 = adjudicate(tinyCostScenario);
+check(r0.feasible, '裁决模块：极小代价差场景应判定为可行');
+if (r0.feasible) {
+  check(r0.plan.steps.length === 4, '裁决模块：极小代价差场景方案应覆盖全部 4 块配重');
+  check(
+    r0.plan.steps.every((s) => s.railId === 'P2' && s.optionIndex === 1),
+    '裁决模块：四块均应采用零代价位置录入序号 #2（P2）',
+  );
+  check(
+    r0.plan.steps.map((s) => s.blockIndex).join(',') === '0,1,2,3',
+    '裁决模块：块次序应按录入序号稳定排列（0,1,2,3）',
+  );
+  check(
+    r0.plan.totalCost === 0,
+    `裁决模块：总代价应严格为 0（实际 ${r0.plan.totalCost}），不得取 4e-10 的 #1 方案`,
+  );
+}
+
 // 不可行场景：深度 1 即止步，最深前缀为 b1@R（余量最大），剩余选择同时触发载荷与力矩限制。
 const infeasibleScenario: Scenario = {
   rails: [{ id: 'R', name: 'R', coordinate: 1 }],

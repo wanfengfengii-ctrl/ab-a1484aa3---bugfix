@@ -109,6 +109,36 @@ describe('adjudicate · 可行方案与决胜规则', () => {
     }
   });
 
+  it('纳米级真实代价差不得被容差抹平：严格取零代价位置', () => {
+    // 4 块质量 1 的配重、2 个零力臂导轨：#1 代价 1e-10、#2 代价 0。
+    // 所有可行方案力矩余量完全相同；总代价差仅 4e-10，却是真实成本差异，
+    // 必须选四块均用 #2（总代价 0），位置录入序号决胜不得覆盖它。
+    const tiny = 1e-10;
+    const outcome = adjudicate({
+      rails: rails(['P1', 0], ['P2', 0]),
+      blocks: [
+        block('b1', 1, [[0, tiny], [1, 0]]),
+        block('b2', 1, [[0, tiny], [1, 0]]),
+        block('b3', 1, [[0, tiny], [1, 0]]),
+        block('b4', 1, [[0, tiny], [1, 0]]),
+      ],
+      limits: limits(4, -1, 1),
+    });
+    expect(outcome.feasible).toBe(true);
+    if (!outcome.feasible) return;
+    // 四块全部采用位置录入序号 #2（optionIndex 1），块次序仍按录入序号稳定排列。
+    expect(outcome.plan.steps.map((s) => [s.blockIndex, s.optionIndex])).toEqual([
+      [0, 1],
+      [1, 1],
+      [2, 1],
+      [3, 1],
+    ]);
+    expect(outcome.plan.steps.map((s) => s.railName)).toEqual(['P2', 'P2', 'P2', 'P2']);
+    expect(outcome.plan.totalCost).toBe(0);
+    // 各方案力矩余量相同（恒为 1），代价比较不能被物理量容差吞掉。
+    expect(outcome.plan.minTorqueMargin).toBeCloseTo(1);
+  });
+
   it('多块场景：每块恰用一次且结果确定（可重复）', () => {
     const scenario: Scenario = {
       rails: rails(['L2', -2], ['L1', -1], ['C', 0], ['R1', 1], ['R2', 2]),
